@@ -189,7 +189,7 @@ footer{text-align:center;padding:24px;font-size:12px;color:var(--ink-light);}
     </div>
   </div>
   <div class="container">
-    <div class="card" style="margin-top:28px;">
+    <div class="card" id="desc-card" style="margin-top:28px;">
       <div class="section-label" id="pub-desc-label"></div>
       <h2 id="pub-desc-title"></h2>
       <div id="pub-desc-paragraphs"></div>
@@ -642,7 +642,7 @@ function showConfirmation(firstName, place) {
   });
   document.getElementById('registration-view').style.display = 'none';
   document.getElementById('confirmation-view').style.display = 'block';
-  document.querySelector('.card').style.display = 'none';
+  const dc = document.getElementById('desc-card'); if(dc){ dc.style.display='none'; dc.style.margin='0'; }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
