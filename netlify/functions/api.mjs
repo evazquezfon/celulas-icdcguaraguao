@@ -46,7 +46,8 @@ export default async (request) => {
   }
   let input;
   try { input = await request.json(); } catch { return json({ ok: false, error: "JSON inválido" }, { status: 400 }); }
-  const { action, ...data } = input || {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) return json({ ok: false, error: "Solicitud inválida" }, { status: 400 });
+  const { action, ...data } = input;
 
   if (action === "login") {
     if (typeof data.password !== "string" || data.password !== process.env.ADMIN_PASSWORD) return json({ ok: false, error: "Credenciales inválidas" }, { status: 401 });
@@ -57,8 +58,41 @@ export default async (request) => {
   if (!PUBLIC_ACTIONS.has(action) && !ADMIN_ACTIONS.has(action)) return json({ ok: false, error: "Acción no permitida" }, { status: 400 });
   if (ADMIN_ACTIONS.has(action) && !(await hasAdminSession(request))) return json({ ok: false, error: "No autorizado" }, { status: 401 });
 
-  try { return json(await callAppsScript(action, data)); }
-  catch (error) { console.error(error); return json({ ok: false, error: "No se pudo completar la solicitud" }, { status: 502 }); }
+  let registrationSent = false;
+  try {
+    if (action === "register") {
+      const companions = data.companions === undefined ? [] : data.companions;
+      if (!Array.isArray(companions) || companions.length > 20 || companions.some(name => typeof name !== "string" || !name.trim() || name.trim().length > 200)) {
+        return json({ ok: false, error: "Indica el nombre completo de cada acompañante." }, { status: 400 });
+      }
+      data.companions = companions.map(name => name.trim());
+      const requested = 1 + data.companions.length;
+      const availability = await callAppsScript("getSpots", {});
+      const spot = availability.ok && availability.spots?.[data.placeId];
+      if (!spot) return json({ ok: false, error: "No se pudo comprobar la disponibilidad. Intenta de nuevo." }, { status: 502 });
+      const available = typeof spot.available === "number" ? Math.max(0, spot.available)
+        : typeof spot.limit === "number" && spot.limit > 0 && typeof spot.used === "number" ? Math.max(0, spot.limit - spot.used) : null;
+      if (available !== null && requested > available) {
+        return json({ ok: false, full: true, requested, available,
+          error: `Intentas registrar ${requested} participantes y quedan ${available} cupos. El grupo debe registrarse completo.` });
+      }
+      // This preflight improves feedback; Apps Script must recheck under its
+      // spreadsheet lock and write the entire group in one operation.
+    }
+    registrationSent = action === "register";
+    const result = await callAppsScript(action, data);
+    if (registrationSent && result.ok && result.registeredCount !== 1 + data.companions.length) {
+      return json({ ok: false, uncertain: true, error: "El servidor no confirmó el total del grupo. Comprueba la inscripción con la administración antes de repetirla." }, { status: 502 });
+    }
+    if (registrationSent && !result.ok && !result.full) result.uncertain = true;
+    return json(result);
+  }
+  catch {
+    console.error("La solicitud a Apps Script no pudo completarse");
+    return json({ ok: false, uncertain: registrationSent, error: registrationSent
+      ? "No se pudo confirmar la escritura. Comprueba la inscripción con la administración antes de repetirla."
+      : "No se pudo completar la solicitud" }, { status: 502 });
+  }
 };
 
 export const config = { path: "/api" };
