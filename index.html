@@ -345,6 +345,14 @@ footer{text-align:center;padding:24px;font-size:12px;color:var(--ink-light);}
         <div class="section-label">Paso 2 de 2</div>
         <h2>Tu información</h2>
         <div class="form-grid" id="fields-container"></div>
+        <div style="margin-top:24px;">
+          <h3>Acompañantes</h3>
+          <p>Indica solamente el nombre completo de cada acompañante.</p>
+          <div id="companions-container"></div>
+          <button type="button" class="btn btn-secondary" id="btn-add-companion" onclick="addCompanion()">Agregar acompañante</button>
+          <p id="participant-count" role="status" style="margin-top:12px;">Total: 1 participante</p>
+          <p id="registration-error" role="alert" style="color:var(--terra);margin-top:12px;"></p>
+        </div>
         <button class="btn btn-primary" id="btn-register" onclick="submitRegistration()">Confirmar mi registro →</button>
       </div>
     </div>
@@ -707,7 +715,37 @@ async function submitWaitlist() {
 }
 
 // ===== SUBMIT REGISTRATION =====
+let registrationPending = false;
+let registrationUncertain = false;
+let companionSequence = 0;
+function updateParticipantCount() {
+  const total = 1 + document.querySelectorAll('[data-companion-name]').length;
+  document.getElementById('participant-count').textContent = `Total: ${total} participante${total === 1 ? '' : 's'}`;
+}
+function addCompanion() {
+  if (registrationPending || registrationUncertain) return;
+  if (document.querySelectorAll('[data-companion-name]').length >= 20) { registrationError('Puedes añadir hasta 20 acompañantes.'); return; }
+  const id = 'companion-' + (++companionSequence);
+  const row = document.createElement('div');
+  row.className = 'form-group';
+  const label = document.createElement('label');
+  label.htmlFor = id; label.textContent = 'Nombre completo del acompañante *';
+  const input = document.createElement('input');
+  input.id = id; input.type = 'text'; input.required = true; input.maxLength = 200;
+  input.autocomplete = 'name'; input.dataset.companionName = '';
+  const remove = document.createElement('button');
+  remove.type = 'button'; remove.className = 'btn btn-secondary'; remove.textContent = 'Eliminar acompañante';
+  remove.onclick = () => { if (!registrationPending) { row.remove(); updateParticipantCount(); } };
+  row.append(label, input, remove);
+  document.getElementById('companions-container').appendChild(row);
+  updateParticipantCount(); input.focus();
+}
+function registrationError(message) {
+  document.getElementById('registration-error').textContent = message;
+}
 async function submitRegistration() {
+  if (registrationPending || registrationUncertain) return;
+  registrationError('');
   if (!selectedPlace) { showToast('Por favor selecciona un lugar'); return; }
   const params = { placeId: selectedPlace.id };
   let firstFieldValue = '';
@@ -721,27 +759,50 @@ async function submitRegistration() {
     if (!firstFieldValue) firstFieldValue = val;
   });
   if (!valid) { showToast('Por favor completa todos los campos requeridos (*)'); return; }
+  const companionInputs = [...document.querySelectorAll('[data-companion-name]')];
+  if (companionInputs.some(input => !input.value.trim() || !input.checkValidity())) {
+    registrationError('Completa el nombre completo de cada acompañante o elimínalo.'); return;
+  }
+  params.companions = companionInputs.map(input => input.value.trim());
+  const participantCount = 1 + params.companions.length;
+  const registrationPlace = selectedPlace;
   const btn = document.getElementById('btn-register');
+  registrationPending = true;
+  const companionControls = document.querySelectorAll('#companions-container input, #companions-container button, #btn-add-companion');
+  companionControls.forEach(control => control.disabled = true);
   btn.disabled = true; btn.textContent = 'Guardando...';
   try {
     const result = await api('register', params);
     if (result.full) {
-      showToast('⚠️ Los espacios se llenaron justo ahora. Elige otro lugar.');
+      const available = result.available ?? result.remaining;
+      registrationError(Number.isFinite(available)
+        ? `Intentas registrar ${participantCount} participantes y quedan ${available} cupos. El grupo debe registrarse completo.`
+        : `No hay cupos suficientes para registrar ${participantCount} participantes. Actualiza la disponibilidad.`);
       await loadSpots(); selectedPlace = null;
       btn.disabled = false; btn.textContent = 'Confirmar mi registro →';
       return;
     }
     if (result.ok) {
       // Merge sensitive data returned by server into the place object
-      const placeWithDetails = Object.assign({}, selectedPlace, result.placeDetails || {});
-      showConfirmation(firstFieldValue, placeWithDetails);
+      const placeWithDetails = Object.assign({}, registrationPlace, result.placeDetails || {});
+      if (result.registeredCount !== participantCount) {
+        registrationUncertain = true;
+        registrationError('El servidor no confirmó el total del grupo. Consulta con la administración antes de repetir la inscripción.');
+        return;
+      }
+      showConfirmation(firstFieldValue, placeWithDetails, result.registeredCount);
     }
-    else { showToast('Error al guardar. Intenta de nuevo.'); btn.disabled = false; btn.textContent = 'Confirmar mi registro →'; }
-  } catch(e) { showToast('Error de conexión.'); btn.disabled = false; btn.textContent = 'Confirmar mi registro →'; }
+    else { registrationUncertain = Boolean(result.uncertain); registrationError(result.error || 'Error al guardar. Intenta de nuevo.'); btn.disabled = false; btn.textContent = 'Confirmar mi registro →'; }
+  } catch(e) { registrationUncertain = true; registrationError('No se pudo confirmar la inscripción. Consulta con la administración antes de repetirla para evitar duplicados.'); }
+  finally {
+    registrationPending = false;
+    companionControls.forEach(control => control.disabled = registrationUncertain);
+    btn.disabled = registrationUncertain; btn.textContent = registrationUncertain ? 'Inscripción pendiente de verificar' : 'Confirmar mi registro →';
+  }
 }
 
-function showConfirmation(firstName, place) {
-  document.getElementById('conf-greeting').textContent = `¡Gracias ${firstName}! Nos alegra tenerte con nosotros.`;
+function showConfirmation(firstName, place, participantCount = 1) {
+  document.getElementById('conf-greeting').textContent = `¡Gracias ${firstName}! Se inscribieron ${participantCount} participante${participantCount === 1 ? '' : 's'}. Nos alegra tenerte con nosotros.`;
   document.getElementById('conf-place-name').textContent = place.name;
   const addrParts = [place.direccion, [place.pueblo, place.pais].filter(Boolean).join(', ')].filter(Boolean);
   const fullAddr = addrParts.join(' · ') || '';
